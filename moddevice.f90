@@ -37,14 +37,16 @@ MODULE moddevice
     !type(simplemixer) :: mixer
     type(andersonmixer) :: mixer
 
-    type thomasfermidens
+    type rectancular_material
         logical :: bActive
         doubleprecision :: xstart,ystart,zstart,xstop,ystop,zstop,rho0,bparam
-    endtype thomasfermidens
+    endtype rectancular_material
 
-    integer :: no_tf_dens
+    integer :: no_tf_dens,no_cnst_dens,no_cnst_pot
     integer,parameter :: MAX_NO_TF_DENS = 100
-    type(thomasfermidens) tfdens(MAX_NO_TF_DENS)
+    type(rectancular_material) tfdens(MAX_NO_TF_DENS)
+    type(rectancular_material) cnstdens(MAX_NO_TF_DENS)
+    type(rectancular_material) cnstpot(MAX_NO_TF_DENS)
 
     public :: device_create, device_free
     public :: device_solve,device_solve_poisson
@@ -84,8 +86,11 @@ MODULE moddevice
         enddo
         dx = atomic_DX * L2LR
 
-        call mixer%init(DEVICE_MESH_SIZE,0.02D0)
-        no_tf_dens = 0
+        call mixer%init(DEVICE_MESH_SIZE,0.8D0,4)
+
+        no_tf_dens    = 0
+        no_cnst_dens  = 0
+        no_cnst_pot   = 0
     end subroutine device_create
 
     subroutine device_free()
@@ -105,9 +110,24 @@ MODULE moddevice
         integer :: i,j,k
         doubleprecision :: volume , nvalue
 
-        volume = 0
 
         nvalue = dvalue * (1 / (L2LR**3))
+
+
+        no_cnst_dens = no_cnst_dens + 1
+        cnstdens(no_cnst_dens)%rho0   =  nvalue
+        cnstdens(no_cnst_dens)%bparam =  0.0 ! not used here
+        cnstdens(no_cnst_dens)%bActive= .true.
+        cnstdens(no_cnst_dens)%xstart = xstart
+        cnstdens(no_cnst_dens)%ystart = ystart
+        cnstdens(no_cnst_dens)%zstart = zstart
+        cnstdens(no_cnst_dens)%xstop  = xstop
+        cnstdens(no_cnst_dens)%ystop  = ystop
+        cnstdens(no_cnst_dens)%zstop  = zstop
+
+
+        volume = 0
+
 
         do i =  xstart / atomic_DX , xstop / atomic_DX
             do j =  ystart / atomic_DX , ystop / atomic_DX
@@ -159,6 +179,7 @@ MODULE moddevice
             enddo
         enddo
         print"(A,e12.2,A,f8.2)"," device:: Added Thomas-Fermi density:",dvalue," with total charge:",nvalue*volume
+        print*,"        Udepl:",tfdens(no_tf_dens)%rho0**(2.0/3.0)/tfdens(no_tf_dens)%bparam,"[meV]"
 
     end subroutine device_add_tf_dens
 
@@ -166,6 +187,17 @@ MODULE moddevice
     subroutine device_add_const_pot(xstart,xstop,ystart,ystop,zstart,zstop,dvalue)
         doubleprecision :: xstart,ystart,zstart,xstop,ystop,zstop,dvalue
         integer :: i,j,k
+
+        no_cnst_pot = no_cnst_pot + 1
+        cnstpot(no_cnst_pot)%rho0   =  dvalue/Rd
+        cnstpot(no_cnst_pot)%bparam =  0.0 ! not used here
+        cnstpot(no_cnst_pot)%bActive= .true.
+        cnstpot(no_cnst_pot)%xstart = xstart
+        cnstpot(no_cnst_pot)%ystart = ystart
+        cnstpot(no_cnst_pot)%zstart = zstart
+        cnstpot(no_cnst_pot)%xstop  = xstop
+        cnstpot(no_cnst_pot)%ystop  = ystop
+        cnstpot(no_cnst_pot)%zstop  = zstop
 
         do i =  xstart / atomic_DX , xstop / atomic_DX
             do j =  ystart / atomic_DX , ystop / atomic_DX
@@ -182,6 +214,77 @@ MODULE moddevice
 
     end subroutine device_add_const_pot
 
+
+    subroutine device_set_geometry(grid_scale)
+        integer :: grid_scale
+        integer :: i,j,k,d,g
+        doubleprecision :: xstart,ystart,zstart,xstop,ystop,zstop,aux
+
+
+        DEVICE_DENS = 0
+        do i =  2 , nx-1
+            do j =  2 , ny-1
+                do k =  2 , nz -1
+                     DEVICE_FLAGS(i,j,k) = DFLAG_NORMAL
+                enddo
+            enddo
+        enddo
+
+
+        g = grid_scale
+        do d = 1 , no_cnst_dens
+
+            xstart = cnstdens(d)%xstart
+            ystart = cnstdens(d)%ystart
+            zstart = cnstdens(d)%zstart
+
+            xstop = cnstdens(d)%xstop
+            ystop = cnstdens(d)%ystop
+            zstop = cnstdens(d)%zstop
+            aux   = cnstdens(d)%rho0
+
+
+            do i =  xstart / atomic_DX / g , xstop / atomic_DX / g
+                do j =  ystart / atomic_DX / g , ystop / atomic_DX / g
+                    do k =  zstart / atomic_DX / g , zstop / atomic_DX / g
+                        ! zeby nie wyjsc poza uklad
+                        if(i > 0 .and. i <= nx/g .and. j > 0 .and. j <= ny/g .and. k > 0 .and. k <= nz/g) then
+                            DEVICE_DENS(i*g,j*g,k*g) = aux
+                        endif
+                    enddo
+                enddo
+            enddo
+        enddo ! end of const dens
+
+        do d = 1 , no_cnst_pot
+
+            xstart = cnstpot(d)%xstart
+            ystart = cnstpot(d)%ystart
+            zstart = cnstpot(d)%zstart
+
+            xstop = cnstpot(d)%xstop
+            ystop = cnstpot(d)%ystop
+            zstop = cnstpot(d)%zstop
+            aux   = cnstpot(d)%rho0
+
+
+            do i =  xstart / atomic_DX / g , xstop / atomic_DX / g
+                do j =  ystart / atomic_DX / g , ystop / atomic_DX / g
+                    do k =  zstart / atomic_DX / g , zstop / atomic_DX / g
+                        ! zeby nie wyjsc poza uklad
+                        if(i > 0 .and. i <= nx/g .and. j > 0 .and. j <= ny/g .and. k > 0 .and. k <= nz/g) then
+                            DEVICE_POT(i*g,j*g,k*g)   = aux
+                            DEVICE_FLAGS(i*g,j*g,k*g) = DFLAG_DIRICHLET
+                        endif
+                    enddo
+                enddo
+            enddo
+        enddo ! end of const dens
+
+
+    end subroutine device_set_geometry
+
+
     subroutine device_solve()
 
         integer :: i,j,k,iter,d
@@ -189,10 +292,16 @@ MODULE moddevice
         doubleprecision :: xstart,ystart,zstart,xstop,ystop,zstop,dvalue,aux,U
         MIXERS_SHOW_DEBUG = .true.
 
-        call device_solve_poisson_directly(DIRECT_POISSON_PREP_MAT)
+        !call device_solve_poisson_directly(DIRECT_POISSON_PREP_MAT)
         do iter = 0 , 500
         print*,"Iteracja:",iter," Last residuum:",mixer%get_last_residuum()
         call mixer%set_input_vec(pack(DEVICE_DENS, .true. ))
+
+        call device_set_geometry(2)
+        call modutils_3darray2VTK(DEVICE_DENS/cnstdens(1)%rho0,atomic_DX,"rho")
+        call modutils_3darray2VTK(DEVICE_POT,dx,"pot")
+        !stop
+
         do d = 1 , no_tf_dens
 
             xstart = tfdens(d)%xstart
@@ -212,11 +321,13 @@ MODULE moddevice
                             if( U > aux ) then
                                 DEVICE_DENS(i,j,k) = tfdens(d)%rho0 &
                                 - ( tfdens(d)%rho0**(2.0/3.0) + tfdens(d)%bparam * U )**(3.0/2.0)
-                                !print*,tfdens(d)%rho0**(2.0/3.0) + tfdens(d)%bparam * U
-                                !if(DEVICE_DENS(i,j,k) < 0) DEVICE_DENS(i,j,k) = 0
+
+                                !DEVICE_DENS(i,j,k) = DEVICE_DENS(i,j,k) / ( exp( (U - aux)/0.001 )+1)
                             else
                                 DEVICE_DENS(i,j,k) =  tfdens(d)%rho0
                             endif
+
+                            DEVICE_DENS(i,j,k) = tfdens(d)%rho0 / ( exp( (U - aux)/0.01 )+1)
                             DEVICE_DENS(i,j,k) = -DEVICE_DENS(i,j,k)
                             !print*,i,j,k,DEVICE_DENS(i,j,k),"r0=",tfdens(d)%rho0
                         endif
@@ -230,19 +341,21 @@ MODULE moddevice
         DEVICE_DENS = reshape(mixer%mixedVec,(/nx,ny,nz/))
         write(54232,*),iter ,mixer%get_last_residuum()
 
-!        if(mixer%get_last_residuum() < 1.0D-4) then
-            call device_solve_poisson()
-!        else
- !           call device_solve_poisson_directly(DIRECT_POISSON_SOLVE)
-!        endif
+        !if(mixer%get_last_residuum() < 1.0D-3) then
+        call device_solve_poisson()
+        !else
+        !    call device_solve_poisson_directly(DIRECT_POISSON_SOLVE)
+        !endif
+        if(mixer%get_last_residuum() < 1.0D-10 ) exit
 
-        if(mod(iter,5) == 0) then
-            call write_to_file(321,"rho.txt",DEVICE_DENS(:,:,nz/2-5),nx,ny)
-            call write_to_file(321,"pot.txt",DEVICE_POT(:,:,nz/2-5),nx,ny)
-        endif
+
+        !if(mod(iter,5) == 0) then
+            call write_to_file(321,"rho.txt",DEVICE_DENS(:,:,nz-15)/tfdens(1)%rho0,nx,ny)
+            call write_to_file(321,"pot.txt",DEVICE_POT(:,:,nz-15),nx,ny)
+        !endif
 
         enddo
-        call device_solve_poisson_directly(DIRECT_POISSON_FREE_SOLVER)
+        !call device_solve_poisson_directly(DIRECT_POISSON_FREE_SOLVER)
 
     end subroutine device_solve
 
@@ -267,11 +380,9 @@ MODULE moddevice
         print*,"device:: solver start"
         do while( abs(delta2-delta1) > eps .or. iter < 10)
             delta2 = delta1
-            !call mixer%set_input_vec(pack(DEVICE_POT, .true. ))
-            call device_iterate_solution(delta1)
-            !call mixer%set_output_vec(pack(DEVICE_POT, .true. ))
-            !call mixer%mix()
-            !DEVICE_POT = reshape(mixer%mixedVec,(/nx,ny,nz/))
+
+            call device_iterate_solution(delta1,2)
+
             iter = iter + 1
             if(mod(iter,500) == 0) then
                 print*, iter , "eps:" ,  abs(delta2-delta1)
@@ -280,9 +391,40 @@ MODULE moddevice
 
     end subroutine device_solve_poisson
 
-    subroutine device_iterate_solution(delta1)
+
+    subroutine device_solve_poisson_grid(grid_scale)
+        integer :: grid_scale
+        integer :: i,j,k,iter
+
+        doubleprecision :: delta1,delta2,eps
+
+
+        delta1 = 5.0
+        delta2 = 1.0
+        eps    = 0.001
+        iter = 0
+
+        print*,"device:: solver start with grid:",grid_scale
+
+
+
+        do while( abs(delta2-delta1) > eps .or. iter < 10)
+            delta2 = delta1
+            call device_iterate_solution(delta1,grid_scale)
+            iter = iter + 1
+            if(mod(iter,500) == 0) then
+                print*, iter , "eps:" ,  abs(delta2-delta1)
+            endif
+        enddo ! end of while
+
+    end subroutine device_solve_poisson_grid
+
+
+
+    subroutine device_iterate_solution(delta1,grid_scale)
         doubleprecision ,intent(inout) :: delta1
-        integer :: i,j,k
+        integer :: grid_scale
+        integer :: i,j,k,g
 
         doubleprecision :: delta2pi
         doubleprecision :: dx2
@@ -290,30 +432,33 @@ MODULE moddevice
 
 
         omega    = 1.8
-        delta2pi = 4*dx*dx*M_PI
-        dx2      = dx*dx
+        delta2pi = 4*(dx*grid_scale)*(dx*grid_scale)*M_PI/E_MAT
+        dx2      = (dx*grid_scale)*(dx*grid_scale)
 
         delta1  = 0
-        do i = 1 , nx
-        do j = 1 , ny
-        do k = 1 , nz
+        g = grid_scale
+        do i = grid_scale , nx - grid_scale+1 , grid_scale
+        do j = grid_scale , ny - grid_scale+1 , grid_scale
+        do k = grid_scale , nz - grid_scale+1 , grid_scale
             if(DEVICE_FLAGS(i,j,k) == DFLAG_NORMAL) then
-                aux1 = (DEVICE_POT(i+1,j,k)+DEVICE_POT(i-1,j,k) + &
-                        DEVICE_POT(i,j+1,k)+DEVICE_POT(i,j-1,k) + &
-                        DEVICE_POT(i,j,k+1)+DEVICE_POT(i,j,k-1))
+                aux1 = (DEVICE_POT(i+g,j,k)+DEVICE_POT(i-g,j,k) + &
+                        DEVICE_POT(i,j+g,k)+DEVICE_POT(i,j-g,k) + &
+                        DEVICE_POT(i,j,k+g)+DEVICE_POT(i,j,k-g))
                 DEVICE_POT(i,j,k) = (1-omega)*DEVICE_POT(i,j,k)  &
                             + (omega)*(aux1 + delta2pi * DEVICE_DENS(i,j,k))/6.0
             else if(DEVICE_FLAGS(i,j,k) == DFLAG_NEUMAN) then
                 aux1 = 0
                 aux2 = 0
-                if(i == 1 ) then ; aux1 = aux1 + DEVICE_POT(i+1,j,k) ; aux2 = aux2 + 1;
-                else if(i == nx) then ; aux1 = aux1 + DEVICE_POT(i-1,j,k) ; aux2 = aux2 + 1;
-                else if(j == 1 ) then ; aux1 = aux1 + DEVICE_POT(i,j+1,k) ; aux2 = aux2 + 1;
-                else if(j == ny) then ; aux1 = aux1 + DEVICE_POT(i,j-1,k) ; aux2 = aux2 + 1;
-                else if(k == 1 ) then ; aux1 = aux1 + DEVICE_POT(i,j,k+1) ; aux2 = aux2 + 1;
-                else if(k == nz) then ; aux1 = aux1 + DEVICE_POT(i,j,k-1) ; aux2 = aux2 + 1;
+                if(i == 1 ) then      ; aux1 = aux1 + DEVICE_POT(i+g,j,k) ; aux2 = aux2 + 1;
+                else if(i == nx) then ; aux1 = aux1 + DEVICE_POT(i-g,j,k) ; aux2 = aux2 + 1;
+                else if(j == 1 ) then ; aux1 = aux1 + DEVICE_POT(i,j+g,k) ; aux2 = aux2 + 1;
+                else if(j == ny) then ; aux1 = aux1 + DEVICE_POT(i,j-g,k) ; aux2 = aux2 + 1;
+                else if(k == 1 ) then ; aux1 = aux1 + DEVICE_POT(i,j,k+g) ; aux2 = aux2 + 1;
+                else if(k == nz) then ; aux1 = aux1 + DEVICE_POT(i,j,k-g) ; aux2 = aux2 + 1;
                 endif
                 DEVICE_POT(i,j,k) = aux1
+            else if(DEVICE_FLAGS(i,j,k) == DFLAG_DIRICHLET) then
+                print*,"dirichlet:",DEVICE_POT(i,j,k)
             endif
             delta1 = delta1 +  DEVICE_POT(i,j,k)**2
         enddo
@@ -477,7 +622,9 @@ MODULE moddevice
         do j = 1 , ny
         do k = 1 , nz
             if(DEVICE_FLAGS(i,j,k) == DFLAG_NORMAL) then
-                VECPOT(GINDEX(i,j,k)) = - 4 * M_PI * DEVICE_DENS(i,j,k)
+                VECPOT(GINDEX(i,j,k)) = - 4 * M_PI * DEVICE_DENS(i,j,k) / E_MAT
+            else if(DEVICE_FLAGS(i,j,k) == DFLAG_DIRICHLET) then
+                VECPOT(GINDEX(i,j,k)) = DEVICE_POT(i,j,k)
             endif
         enddo
         enddo
